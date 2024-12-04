@@ -1,0 +1,25 @@
+# a conda/mamba env for development and testing
+name: nonstatcat
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - jupytext
+  - matplotlib
+  - meson!=0.63.0
+  - ninja
+  - numpy
+  - pandas
+  - cython
+  - jupyter
+  - notebook
+  - nbconvert
+  - pip
+  - pip:
+    - git+https://github.com/pypest/pypestutils.git
+    - git+https://github.com/modflowpy/flopy.git
+
+# Win64 may also want
+# - m2w64-gcc-fortran
