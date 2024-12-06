@@ -4,9 +4,11 @@ import shutil
 import numpy as np 
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib import use
 import flopy 
 import pyemu
 
+use('qt5agg')
 
 if sys.platform.startswith('win'):
     bin_path = os.path.join("bin","win")
@@ -22,10 +24,21 @@ else:
     raise Exception('***ERROR: OPERATING SYSTEM UNKOWN***')
 
 
-def build_flowmodel(new_d):
+def build_flowmodel(new_d, delrc=10):
     if os.path.exists(new_d):
         shutil.rmtree(new_d)
     os.makedirs(new_d)
+    # after moore and doherty 2005:
+    # 500 m × 800 m rectangular domain of a single-layer
+    # groundwater model of flow in a confined aquifer of
+    # 10 m thickness. A fixed inflow of 0.1 m3 d−1 m−1
+    # occurs through the upper boundary of the model;
+    # heads are fixed at 0 m along the lower boundary.
+    # A hydraulic conductivity field with a log average
+    # value of zero was generated using a log exponential
+    # variogram with a range (3 times the coefficient
+    # in the exponent in the variogram equation) of
+    # 600 m and a sill of 0.2. Diffuse recharge is zero.
 
     sim = flopy.mf6.MFSimulation(sim_name="model", exe_name="mf6", version="mf6", sim_ws=new_d,
                                  memory_print_option="ALL",continue_=True)
@@ -44,10 +57,13 @@ def build_flowmodel(new_d):
 
     top = 0
     botm = -10
-    nrow = 800
-    ncol = 500
-    delr = delc = 10.0
-
+    ylen = 800
+    xlen = 500
+    delr = delc = delrc
+    assert ylen % delc == 0 # are these the right way round (not that it matters)
+    assert xlen % delr == 0
+    nrow = ylen // delc
+    ncol = xlen // delr
     dis = flopy.mf6.ModflowGwfdis(gwf, nlay=1, nrow=nrow, ncol=ncol, delr=delr, delc=delc, 
     	                          top=top, botm=botm,idomain=1)
 
@@ -72,10 +88,10 @@ def build_flowmodel(new_d):
     sim.write_simulation()
 
     for bin_name in os.listdir(bin_path):
-    	shutil.copy2(os.path.join(bin_path,bin_name),os.path.join(new_d,bin_name))
+        shutil.copy2(os.path.join(bin_path,bin_name),os.path.join(new_d,bin_name))
 
     pyemu.os_utils.run("mf6",cwd=new_d)
 
 
 if __name__ == "__main__":
-	build_flowmodel("base_model")
+    build_flowmodel("base_model")
