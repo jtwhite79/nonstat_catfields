@@ -261,7 +261,7 @@ def post_process_run(ws="."):
     return arr,hdf,pathdf,resultsdf
 
 
-def setup_pst(org_d,include_all_outputs=False):
+def setup_pst(org_d,full_interface=True,include_all_outputs=False):
     temp_d = 'temp'
     if os.path.exists(os.path.join(temp_d)):
         shutil.rmtree(temp_d)
@@ -290,29 +290,28 @@ def setup_pst(org_d,include_all_outputs=False):
 
     pf.extra_py_imports.append("shutil")
     pf.extra_py_imports.append("os")
-    pf.extra_py_imports.append("flopy")
+    pf.extra_py_imports.append("flopy") 
 
-    pf.mod_sys_cmds.append("mf6")
-    pf.mod_sys_cmds.append("mp7 model_mp.mpsim")
-
-    pf.add_py_function("workflow.py","interp_pathline_to_consistent_nobs(ws='.')",is_pre_cmd=None)
-    pf.add_py_function("workflow.py","get_final_particle_info(pathdf)",is_pre_cmd=None)
-    pf.add_py_function("workflow.py","load_pathline(pathdf)",is_pre_cmd=None)
-    pf.add_py_function("workflow.py","post_process_run()",is_pre_cmd=False)
-    
-    pf.add_observations("pathline_consistent.csv",index_cols=["particleid","ptime"],
-                        use_cols=["x","y"],prefix="pathline",
-                        obsgp=["pathlinex","pathliney"])
-    pf.add_observations("endpoint.csv",index_cols=["pid"],
-                        use_cols=["ptime","x"],prefix="endpoint",
-                        obsgp=["endpointptime","endpointx"])
-    if include_all_outputs:
-        pf.add_observations("heads.dat",prefix="head",obsgp="head")
-    pf.add_observations("heads.csv",index_cols="hname",use_cols=["hval","kval"],prefix="result",obsgp=["head","k"])
-
+    if full_interface:
+        pf.mod_sys_cmds.append("mf6")
+        pf.mod_sys_cmds.append("mp7 model_mp.mpsim")
+        pf.add_py_function("workflow.py","interp_pathline_to_consistent_nobs(ws='.')",is_pre_cmd=None)
+        pf.add_py_function("workflow.py","get_final_particle_info(pathdf)",is_pre_cmd=None)
+        pf.add_py_function("workflow.py","load_pathline(pathdf)",is_pre_cmd=None)
+        pf.add_py_function("workflow.py","post_process_run()",is_pre_cmd=False)
+        
+        pf.add_observations("pathline_consistent.csv",index_cols=["particleid","ptime"],
+                            use_cols=["x","y"],prefix="pathline",
+                            obsgp=["pathlinex","pathliney"])
+        pf.add_observations("endpoint.csv",index_cols=["pid"],
+                            use_cols=["ptime","x"],prefix="endpoint",
+                            obsgp=["endpointptime","endpointx"])
+        if include_all_outputs:
+            pf.add_observations("heads.dat",prefix="head",obsgp="head")
+        pf.add_observations("heads.csv",index_cols="hname",use_cols=["hval","kvals"],prefix="result",obsgp=["head","k"])
 
     pf.add_observations(karr_fname,prefix="karr",obsgp="karr")
-
+    
     value_v = pyemu.geostats.ExpVario(contribution=1, a=200, anisotropy=5, bearing=0.0)
     value_gs = pyemu.geostats.GeoStruct(variograms=value_v)
     bearing_v = pyemu.geostats.ExpVario(contribution=1,a=1000,anisotropy=3,bearing=90.0)
@@ -356,13 +355,25 @@ def setup_pst(org_d,include_all_outputs=False):
     pst.pestpp_options["ies_ordered_binary"] = False
     pst.control_data.noptmax = -2
     obs = pst.observation_data
-    obs.loc[:,"weight"] = 0
-    obs.loc[obs.oname=="result","weight"] = 1.0
-    assert pst.nnz_obs > 0
+    if full_interface:
+        obs.loc[:,"weight"] = 0
+        obs.loc[obs.oname=="result","weight"] = 100.0
+        assert pst.nnz_obs > 0
     pst.write(os.path.join(pf.new_d,"pest.pst"),version=2)
     pyemu.os_utils.run("pestpp-ies pest.pst",cwd=pf.new_d)
 
 
+def run(t_d="template",**kwargs):
+    pst = pyemu.Pst(os.path.join(t_d,"pest.pst"))
+    if "noptmax" in kwargs:
+        pst.control_data.noptmax = kwargs.pop("noptmax")
+    m_d = kwargs.pop("m_d","master")
+    num_workers = kwargs.pop("num_workers",10)
+    for k,v in kwargs.items():
+        pst.pestpp_options[k] = v
+
+    pst.write(os.path.join(t_d,"pest.pst"),version=2)
+    pyemu.os_utils.start_workers(t_d,"pestpp-ies","pest.pst",num_workers=num_workers,master_dir=m_d,worker_root=".")
 
 
 if __name__ == "__main__":
@@ -370,5 +381,6 @@ if __name__ == "__main__":
     #build_ptmodel("base_model")
     #quick_domain_plot("base_model_pt")
     #post_process_run("base_model_pt")
-    setup_pst("base_model_pt")
+    setup_pst("base_model_pt",full_interface=False)
+    run(noptmax=-1,m_d="master_prior")
     #interp_pathline_to_consistent_nobs(os.path.join("temp",'model_mp.mppth'))
