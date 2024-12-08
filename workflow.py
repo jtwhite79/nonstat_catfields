@@ -240,16 +240,28 @@ def post_process_run(ws="."):
     hds = flopy.utils.HeadFile(os.path.join(ws,"model.hds"))
     arr = hds.get_data()[0,:,:]
     np.savetxt(os.path.join(ws,"heads.dat"),arr,fmt="%15.6E")
+    karr = np.loadtxt(os.path.join(ws,"model.npf_k.txt"))
+    ivals = [199,399,599,749]
+    jvals = [74,249,424]
+    names, hvals, kvals = [],[],[]
+    for ival in ivals:
+        for jval in jvals:
+            name = "result_i:{0}_j:{1}".format(ival,jval)
+            names.append(name)
+            hvals.append(arr[ival,jval])
+            kvals.append(karr[ival,jval])
+    hdf = pd.DataFrame({"hname":names,"hval":hvals,"kval":kvals})
+    hdf.to_csv(os.path.join(ws,"heads.csv"),index=False)
     pathdf = load_pathline(os.path.join(ws,'model_mp.mppth'))
     resultsdf = get_final_particle_info(pathdf)
     reidx = interp_pathline_to_consistent_nobs(pathdf)
     reidx.to_csv(os.path.join(ws,"pathline_consistent.csv"))
     pathdf.to_csv(os.path.join(ws,"pathline.csv"))
     resultsdf.to_csv(os.path.join(ws,"endpoint.csv"))
-    return arr,pathdf,resultsdf
+    return arr,hdf,pathdf,resultsdf
 
 
-def setup_pst(org_d):
+def setup_pst(org_d,include_all_outputs=False):
     temp_d = 'temp'
     if os.path.exists(os.path.join(temp_d)):
         shutil.rmtree(temp_d)
@@ -272,7 +284,7 @@ def setup_pst(org_d):
     np.savetxt(os.path.join(temp_d,karr_fname),arr,fmt="%15.6E")
     pyemu.os_utils.run("mf6",cwd=temp_d)
     pyemu.os_utils.run("mp7 model_mp.mpsim",cwd=temp_d)
-    arr,pathdf,resultsdf = post_process_run(ws=temp_d)
+    arr,hdf,pathdf,resultsdf = post_process_run(ws=temp_d)
     
     pf = pyemu.utils.PstFrom(temp_d,"template",spatial_reference=gwf.modelgrid,remove_existing=True)
 
@@ -288,26 +300,69 @@ def setup_pst(org_d):
     pf.add_py_function("workflow.py","load_pathline(pathdf)",is_pre_cmd=None)
     pf.add_py_function("workflow.py","post_process_run()",is_pre_cmd=False)
     
-    
     pf.add_observations("pathline_consistent.csv",index_cols=["particleid","ptime"],
-                        use_cols=["x","y"],prefix="pathline",obsgp="pathline")
+                        use_cols=["x","y"],prefix="pathline",
+                        obsgp=["pathlinex","pathliney"])
     pf.add_observations("endpoint.csv",index_cols=["pid"],
-                        use_cols=["ptime","x"],prefix="endpoint",obsgp="endpoint")
-    pf.add_observations("heads.dat",prefix="head",obsgp="head")
+                        use_cols=["ptime","x"],prefix="endpoint",
+                        obsgp=["endpointptime","endpointx"])
+    if include_all_outputs:
+        pf.add_observations("heads.dat",prefix="head",obsgp="head")
+    pf.add_observations("heads.csv",index_cols="hname",use_cols=["hval","kval"],prefix="result",obsgp=["head","k"])
 
 
     pf.add_observations(karr_fname,prefix="karr",obsgp="karr")
 
-    v = pyemu.geostats.ExpVario(contribution=1.0,a=200)
-    gs = pyemu.geostats.GeoStruct(variograms=v)
-    pf.add_parameters(karr_fname,par_type="pilotpoints",geostruct=gs,pargp="pp",
-                      upper_bound=10.0,lower_bound=0.1,
+    value_v = pyemu.geostats.ExpVario(contribution=1, a=200, anisotropy=5, bearing=0.0)
+    value_gs = pyemu.geostats.GeoStruct(variograms=value_v)
+    bearing_v = pyemu.geostats.ExpVario(contribution=1,a=1000,anisotropy=3,bearing=90.0)
+    bearing_gs = pyemu.geostats.GeoStruct(variograms=bearing_v)
+    aniso_v = pyemu.geostats.ExpVario(contribution=1, a=1000, anisotropy=3, bearing=45.0)
+    aniso_gs = pyemu.geostats.GeoStruct(variograms=aniso_v)
+
+    pf.add_parameters(karr_fname,par_type="pilotpoints",geostruct=value_gs,pargp="ppvalue",par_name_base="ppvalue",
+                      upper_bound=10.0,lower_bound=0.1,apply_order=2,
                       pp_options={"pp_space":30,"prep_hyperpars":True,"try_use_ppu":True})
+
+    tag = "pp"
+    tfiles = [f for f in os.listdir(pf.new_d) if f.startswith(tag)]
+    afile = [f for f in tfiles if "aniso" in f][0]
+    pf.add_parameters(afile,par_type="constant",par_name_base=tag+"aniso",
+                      pargp=tag+"aniso",lower_bound=-1.0,upper_bound=1.0,
+                      apply_order=1,
+                      par_style="a",transform="none",initial_value=0.0)
+    if include_all_outputs:
+        pf.add_observations(afile, prefix=tag+"aniso", obsgp=tag+"aniso")
+    
+    bfile = [f for f in tfiles if "bearing" in f][0]
+    pf.add_parameters(bfile, par_type="pilotpoints", par_name_base=tag + "bearing",
+                      pargp=tag + "bearing", lower_bound=-45,upper_bound=45,
+                      par_style="a",transform="none",
+                      pp_options={"try_use_ppu":True,"pp_space":30},
+                      apply_order=1,geostruct=bearing_gs)
+    if include_all_outputs:
+        pf.add_observations(bfile, prefix=tag + "bearing", obsgp=tag + "bearing")
 
     pst = pf.build_pst(version=None)
     pst.control_data.noptmax = 0
     pst.write(os.path.join(pf.new_d,"pest.pst"),version=2)
     pyemu.os_utils.run("pestpp-ies pest.pst",cwd=pf.new_d)
+
+    pe = pf.draw(num_reals=1000)
+    pe.enforce()
+    pe.to_binary(os.path.join(pf.new_d,"prior.jcb"))
+    pst.pestpp_options["ies_par_en"] = "prior.jcb"
+    pst.pestpp_options["ies_save_binary"] = True
+    pst.pestpp_options["ies_ordered_binary"] = False
+    pst.control_data.noptmax = -2
+    obs = pst.observation_data
+    obs.loc[:,"weight"] = 0
+    obs.loc[obs.oname=="result","weight"] = 1.0
+    assert pst.nnz_obs > 0
+    pst.write(os.path.join(pf.new_d,"pest.pst"),version=2)
+    pyemu.os_utils.run("pestpp-ies pest.pst",cwd=pf.new_d)
+
+
 
 
 if __name__ == "__main__":
