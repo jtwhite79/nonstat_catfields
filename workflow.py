@@ -125,7 +125,8 @@ def quick_domain_plot(ws):
     hds = flopy.utils.HeadFile(os.path.join(ws,"model.hds"),model=gwf)
     totim = np.cumsum(sim.tdis.perioddata.array["perlen"])
     df = load_pathline(os.path.join(ws,'model_mp.mppth'),totim)
-    print(df)
+    print(df.columns)
+    exit()
 
     x = gwf.modelgrid.xcellcenters
     y = gwf.modelgrid.ycellcenters
