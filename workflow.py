@@ -4,10 +4,14 @@ import shutil
 import numpy as np 
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib import use
 import flopy 
 import pyemu
 
+use('qt5agg')
+
 is_arm = False
+
 if sys.platform.startswith('win'):
     bin_path = os.path.join("bin","win")
     
@@ -23,10 +27,21 @@ else:
     raise Exception('***ERROR: OPERATING SYSTEM UNKOWN***')
 
 
-def build_flowmodel(new_d):
+def build_flowmodel(new_d, delrc=10):
     if os.path.exists(new_d):
         shutil.rmtree(new_d)
     os.makedirs(new_d)
+    # after moore and doherty 2005:
+    # 500 m × 800 m rectangular domain of a single-layer
+    # groundwater model of flow in a confined aquifer of
+    # 10 m thickness. A fixed inflow of 0.1 m3 d−1 m−1
+    # occurs through the upper boundary of the model;
+    # heads are fixed at 0 m along the lower boundary.
+    # A hydraulic conductivity field with a log average
+    # value of zero was generated using a log exponential
+    # variogram with a range (3 times the coefficient
+    # in the exponent in the variogram equation) of
+    # 600 m and a sill of 0.2. Diffuse recharge is zero.
 
     sim = flopy.mf6.MFSimulation(sim_name="model", exe_name="mf6", version="mf6", sim_ws=new_d,
                                  memory_print_option="ALL",continue_=True)
@@ -45,10 +60,13 @@ def build_flowmodel(new_d):
 
     top = 0
     botm = -10
-    nrow = 800
-    ncol = 500
-    delr = delc = 10.0
-
+    ylen = 800
+    xlen = 500
+    delr = delc = delrc
+    assert ylen % delc == 0 # are these the right way round (not that it matters)
+    assert xlen % delr == 0
+    nrow = ylen // delc
+    ncol = xlen // delr
     dis = flopy.mf6.ModflowGwfdis(gwf, nlay=1, nrow=nrow, ncol=ncol, delr=delr, delc=delc, 
     	                          top=top, botm=botm,idomain=1)
 
@@ -69,11 +87,12 @@ def build_flowmodel(new_d):
 
     ic = flopy.mf6.ModflowGwfic(gwf,strt=top)
     npf = flopy.mf6.ModflowGwfnpf(gwf, icelltype=0, k=1.0)
+    sim.simulation_data.max_columns_of_data = gwf.modelgrid.ncol
     sim.set_all_data_external()
     sim.write_simulation()
 
     for bin_name in os.listdir(bin_path):
-    	shutil.copy2(os.path.join(bin_path,bin_name),os.path.join(new_d,bin_name))
+        shutil.copy2(os.path.join(bin_path,bin_name),os.path.join(new_d,bin_name))
 
     pyemu.os_utils.run("mf6",cwd=new_d)
 
@@ -89,15 +108,12 @@ def build_ptmodel(org_d,new_d=None):
     sim = flopy.mf6.MFSimulation.load(sim_ws=new_d)
     gwf = sim.get_model()
 
-    nrow = gwf.dis.nrow.data
+    nrow = gwf.modelgrid.nrow
     ncol =gwf.dis.ncol.data
-    nodes = []
     k = 0
-    i = 100
-    for j in range(0,ncol,20):
-        nodes.append(k * nrow * ncol + i * ncol + j)
-
-
+    i = nrow//8  # release row
+    jinc = ncol//25  # release column increment
+    nodes = gwf.modelgrid.get_node([(k,i,j) for j in range(0,ncol,jinc)])
     # create modpath files
     mpnamf = "model_mp"
 
@@ -127,13 +143,15 @@ def quick_domain_plot(ws):
     totim = np.cumsum(sim.tdis.perioddata.array["perlen"])
     df = load_pathline(os.path.join(ws,'model_mp.mppth'))
 
-    x = gwf.modelgrid.xcellcenters
-    y = gwf.modelgrid.ycellcenters
+    x = gwf.modelgrid.xvertices
+    xcc = gwf.modelgrid.xcellcenters
+    y = gwf.modelgrid.yvertices
+    ycc = gwf.modelgrid.ycellcenters
     fig,ax = plt.subplots(1,1,figsize=(6,6))
     ax.set_aspect("equal")
     ax.pcolormesh(x,y,gwf.npf.k.array[0,:,:])
     hdsarr = hds.get_data()[0,:,:]
-    c = ax.contour(x,y,hdsarr,levels=20,colors="w",linestyles="--")
+    c = ax.contour(xcc,ycc,hdsarr,levels=20,colors="w",linestyles="--")
     ax.clabel(c)
     pids = df.particleid.unique()
     pids.sort()
@@ -237,19 +255,23 @@ def interp_pathline_to_consistent_nobs(pathline_fname):
 
 
 def post_process_run(ws="."):
-    hds = flopy.utils.HeadFile(os.path.join(ws,"model.hds"))
+    mg = flopy.mf6.utils.MfGrdFile(os.path.join(ws, "model.dis.grb")).modelgrid
+    hds = flopy.utils.HeadFile(os.path.join(ws,"model.hds"), modelgrid=mg)
     arr = hds.get_data()[0,:,:]
     np.savetxt(os.path.join(ws,"heads.dat"),arr,fmt="%15.6E")
     karr = np.loadtxt(os.path.join(ws,"model.npf_k.txt"))
-    ivals = [199,399,599,749]
-    jvals = [74,249,424]
+
+    ys =  [200,400,600,750]
+    xs = [75,250,425]
     names, hvals, kvals = [],[],[]
-    for ival in ivals:
-        for jval in jvals:
-            name = "result_i:{0}_j:{1}".format(ival,jval)
+    for y in ys:
+        for x in xs:
+            # get row and cols
+            i, j = mg.intersect(x, y)
+            name = "result_i:{0}_j:{1}".format(i,j)
             names.append(name)
-            hvals.append(arr[ival,jval])
-            kvals.append(karr[ival,jval])
+            hvals.append(arr[i,j])
+            kvals.append(karr[i,j])
     hdf = pd.DataFrame({"hname":names,"hval":hvals,"kval":kvals})
     hdf.to_csv(os.path.join(ws,"heads.csv"),index=False)
     pathdf = load_pathline(os.path.join(ws,'model_mp.mppth'))
@@ -377,10 +399,10 @@ def run(t_d="template",**kwargs):
 
 
 if __name__ == "__main__":
-    #build_flowmodel("base_model")
-    #build_ptmodel("base_model")
-    #quick_domain_plot("base_model_pt")
-    #post_process_run("base_model_pt")
+    build_flowmodel("base_model")
+    build_ptmodel("base_model")
+    quick_domain_plot("base_model_pt")
+    post_process_run("base_model_pt")
     setup_pst("base_model_pt",full_interface=False)
     run(noptmax=-1,m_d="master_prior")
-    #interp_pathline_to_consistent_nobs(os.path.join("temp",'model_mp.mppth'))
+    interp_pathline_to_consistent_nobs(os.path.join("temp",'model_mp.mppth'))
