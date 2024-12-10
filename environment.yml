@@ -6,8 +6,9 @@ channels:
   - defaults
 
 dependencies:
+  - python="3.12"
   - jupytext
-  - matplotlib
+  - matplotlib"<3.9" # i'm having issues with 3.9
   - meson!=0.63.0
   - ninja
   - numpy
